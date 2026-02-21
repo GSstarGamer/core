@@ -43,6 +43,7 @@ from homeassistant.components.plex import PLEX_URI_SCHEME
 from homeassistant.components.plex.services import (  # pylint: disable=hass-component-root-import
     process_plex_payload,
 )
+from homeassistant.components.spotify.const import MEDIA_TYPE_USER_SAVED_TRACKS
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import entity_registry as er
@@ -493,11 +494,56 @@ class SonosMediaPlayerEntity(SonosEntity, MediaPlayerEntity):
 
         if spotify.is_spotify_media_type(media_type):
             media_type = spotify.resolve_spotify_media_type(media_type)
-            media_id = spotify.spotify_uri_from_media_browser_url(media_id)
+            if media_type == MEDIA_TYPE_USER_SAVED_TRACKS:
+                # Spotify media browser returns liked songs as:
+                # spotify://<config_entry_id>/current_user_saved_tracks
+                # Sonos cannot play that synthetic type directly, so map it to
+                # the user's Spotify collection share URI.
+                resolved_media_id = self._resolve_spotify_saved_tracks_uri(media_id)
+                if resolved_media_id != media_id:
+                    media_id = resolved_media_id
+                    media_type = MediaType.PLAYLIST
+                else:
+                    media_id = spotify.spotify_uri_from_media_browser_url(media_id)
+            else:
+                media_id = spotify.spotify_uri_from_media_browser_url(media_id)
 
         await self.hass.async_add_executor_job(
             partial(self._play_media, media_type, media_id, is_radio, **kwargs)
         )
+
+    def _resolve_spotify_saved_tracks_uri(self, media_id: str) -> str:
+        """Resolve Spotify liked songs media to a Spotify collection URI.
+
+        Expected media ID format:
+        `spotify://<spotify_config_entry_id>/current_user_saved_tracks`
+        """
+        if not media_id.startswith("spotify://"):
+            return media_id
+
+        media_source_id = media_id.removeprefix("spotify://")
+        if "/" not in media_source_id:
+            return media_id
+
+        spotify_entry_id, _ = media_source_id.split("/", 1)
+        if not (
+            spotify_entry := self.hass.config_entries.async_get_entry(spotify_entry_id)
+        ) or spotify_entry.domain != spotify.DOMAIN:
+            return media_id
+
+        user_id = getattr(
+            getattr(
+                getattr(getattr(spotify_entry, "runtime_data", None), "coordinator", None),
+                "current_user",
+                None,
+            ),
+            "user_id",
+            None,
+        )
+        if not user_id:
+            return media_id
+
+        return f"spotify:user:{user_id}:collection"
 
     @soco_error()
     def _play_media(

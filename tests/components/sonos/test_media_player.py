@@ -2,6 +2,7 @@
 
 from collections.abc import Generator
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -88,6 +89,7 @@ from homeassistant.helpers.device_registry import (
 )
 from homeassistant.setup import async_setup_component
 
+from tests.common import MockConfigEntry
 from .conftest import MockMusicServiceItem, MockSoCo, SoCoMockFactory, SonosMockEvent
 
 
@@ -575,6 +577,45 @@ async def test_play_media_share_link_replace(
     )
     assert soco_mock.play_from_queue.call_count == 1
     soco_mock.play_from_queue.assert_called_with(0)
+
+
+async def test_play_media_spotify_saved_tracks(
+    hass: HomeAssistant,
+    async_autosetup_sonos,
+    soco_sharelink,
+) -> None:
+    """Test playing Spotify liked songs from the media browser."""
+    # Media browser IDs include the Spotify config entry ID in the host part.
+    spotify_entry_id = "01j5tx5a0ff6g5v0qjx6hbc94t"
+    # Spotify liked songs resolve to spotify:user:<user_id>:collection.
+    spotify_user_id = "1112264111"
+    spotify_entry = MockConfigEntry(domain="spotify", entry_id=spotify_entry_id)
+    spotify_entry.runtime_data = SimpleNamespace(
+        coordinator=SimpleNamespace(
+            current_user=SimpleNamespace(user_id=spotify_user_id),
+        )
+    )
+    spotify_entry.add_to_hass(hass)
+
+    await hass.services.async_call(
+        MP_DOMAIN,
+        SERVICE_PLAY_MEDIA,
+        {
+            ATTR_ENTITY_ID: "media_player.zone_a",
+            ATTR_MEDIA_CONTENT_TYPE: "spotify://current_user_saved_tracks",
+            ATTR_MEDIA_CONTENT_ID: (
+                f"spotify://{spotify_entry_id}/current_user_saved_tracks"
+            ),
+            ATTR_MEDIA_ENQUEUE: MediaPlayerEnqueue.REPLACE,
+        },
+        blocking=True,
+    )
+
+    assert soco_sharelink.add_share_link_to_queue.call_count == 1
+    assert (
+        soco_sharelink.add_share_link_to_queue.call_args_list[0].args[0]
+        == f"spotify:user:{spotify_user_id}:collection"
+    )
 
 
 _mock_playlists = [
